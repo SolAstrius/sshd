@@ -608,6 +608,18 @@ static b32 is_powershell(Str shell)
     return str_contains_ci(base, "powershell") || str_contains_ci(base, "pwsh");
 }
 
+static b32 is_cmdexe(Str shell)
+{
+    iz start = 0;
+    for (iz i = 0; i < shell.len; i++) {
+        if (shell.data[i]=='\\' || shell.data[i]=='/') {
+            start = i + 1;
+        }
+    }
+    Str base = {shell.data + start, shell.len - start};
+    return str_contains_ci(base, "cmd.exe") || base == "cmd";
+}
+
 static void append_arg(u8 *buf, iz cap, iz *len, Str arg)
 {
     b32 quote = arg.len == 0;
@@ -815,7 +827,8 @@ static StdinQueue *stdinq_start(uz pipe)
 static b32 proc_spawn(Proc *p, Str shell, Str cmd, b32 interactive,
                       Slice<Str> names, Slice<Str> vals, Arena *a)
 {
-    b32 pwsh = is_powershell(shell);
+    b32 pwsh   = is_powershell(shell);
+    b32 cmdexe = is_cmdexe(shell);
 
     Str argv[8];
     i32 argc = 0;
@@ -826,6 +839,11 @@ static b32 proc_spawn(Proc *p, Str shell, Str cmd, b32 interactive,
             argv[argc++] = "-NoProfile";
             argv[argc++] = "-Command";
             argv[argc++] = cmd;
+        } else if (cmdexe) {
+            // cmd.exe does not parse backslash-escaped quotes, so the
+            // command is appended verbatim inside /s quotes below.
+            argv[argc++] = "/d";
+            argv[argc++] = "/s";
         } else {
             argv[argc++] = "-c";
             argv[argc++] = cmd;
@@ -843,6 +861,16 @@ static b32 proc_spawn(Proc *p, Str shell, Str cmd, b32 interactive,
     iz  linelen = 0;
     for (i32 i = 0; i < argc; i++) {
         append_arg(line, 4096 - 1, &linelen, argv[i]);
+    }
+    if (cmdexe && cmd.len) {
+        Str pre = " /c \"";
+        for (iz i = 0; i < pre.len && linelen < 4096 - 1; i++) {
+            line[linelen++] = pre.data[i];
+        }
+        for (iz i = 0; i < cmd.len && linelen < 4096 - 2; i++) {
+            line[linelen++] = cmd.data[i];
+        }
+        line[linelen++] = '"';
     }
 
     u16 *wline = utf8_to_wide_alloc(a, Str{line, linelen});
